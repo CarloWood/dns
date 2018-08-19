@@ -31,6 +31,7 @@
 #undef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
 
+// Is this still needed now that _DEFAULT_SOURCE is set? The use of _BSD_SOURCE is deprecated.
 #undef _BSD_SOURCE
 #define _BSD_SOURCE
 
@@ -6537,6 +6538,9 @@ static _Bool dns_so_tcp_keep(struct dns_socket *so) {
 #if defined __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Warray-bounds"
+#elif DNS_GNUC_PREREQ(4,6,0)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
 #endif
 
 static int dns_so_tcp_send(struct dns_socket *so) {
@@ -6603,8 +6607,9 @@ static int dns_so_tcp_recv(struct dns_socket *so) {
 
 #if __clang__
 #pragma clang diagnostic pop
+#elif DNS_GNUC_PREREQ(4,6,0)
+#pragma GCC diagnostic pop
 #endif
-
 
 int dns_so_check(struct dns_socket *so) {
 	int error;
@@ -7276,6 +7281,7 @@ static int dns_res_nameserv_cmp(struct dns_rr *a, struct dns_rr *b, struct dns_r
 
 #define dgoto(sp, i)	\
 	do { R->stack[(sp)].state = (i); goto exec; } while (0)
+
 
 static int dns_res_exec(struct dns_resolver *R) {
 	struct dns_res_frame *F;
@@ -8304,6 +8310,7 @@ enum dns_ai_state {
 }; /* enum dns_ai_state */
 
 #define dns_ai_goto(which)	do { ai->state = (which); goto exec; } while (0)
+
 
 int dns_ai_nextent(struct addrinfo **ent, struct dns_addrinfo *ai) {
 	struct dns_packet *ans, *glue;
