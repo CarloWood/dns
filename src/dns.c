@@ -1954,7 +1954,7 @@ static int dns_m_study(struct dns_p_memo *m, struct dns_packet *P) {
 	m->opt.ttl = 0;
 	dns_rr_foreach(&rr, P, .type = DNS_T_OPT, .section = DNS_S_AR) {
 		m->opt.p = rr.dn.p;
-		m->opt.maxudp = rr.class;
+		m->opt.maxudp = rr.class_;
 		m->opt.ttl = rr.ttl;
 		break;
 	}
@@ -2041,7 +2041,7 @@ dns_q_remake(struct dns_packet **Q, int qflags)
 		return error;
 	if (qlen >= sizeof qname)
 		return DNS_EILLEGAL;
-	return dns_q_make2(Q, qname, qlen, rr.type, rr.class, qflags);
+	return dns_q_make2(Q, qname, qlen, rr.type, rr.class_, qflags);
 }
 
 /*
@@ -2524,7 +2524,7 @@ int dns_rr_copy(struct dns_packet *P, struct dns_rr *rr, struct dns_packet *Q) {
 	if (rr->section != DNS_S_QD && (error = dns_any_parse(dns_any_init(&any, sizeof any), rr, Q)))
 		return error;
 
-	return dns_p_push(P, rr->section, dn, len, rr->type, rr->class, rr->ttl, &any);
+	return dns_p_push(P, rr->section, dn, len, rr->type, rr->class_, rr->ttl, &any);
 } /* dns_rr_copy() */
 
 
@@ -2543,7 +2543,7 @@ int dns_rr_parse(struct dns_rr *rr, unsigned short src, struct dns_packet *P) {
 	rr->type = ((0xff & P->data[p + 0]) << 8)
 	         | ((0xff & P->data[p + 1]) << 0);
 
-	rr->class = ((0xff & P->data[p + 2]) << 8)
+	rr->class_ = ((0xff & P->data[p + 2]) << 8)
 	          | ((0xff & P->data[p + 3]) << 0);
 
 	p += 4;
@@ -2674,7 +2674,7 @@ int dns_rr_cmp(struct dns_rr *r0, struct dns_packet *P0, struct dns_rr *r1, stru
 	if ((cmp = r0->type - r1->type))
 		return cmp;
 
-	if ((cmp = r0->class - r1->class))
+	if ((cmp = r0->class_ - r1->class_))
 		return cmp;
 
 	/*
@@ -2733,7 +2733,7 @@ static _Bool dns_rr_i_match(struct dns_rr *rr, struct dns_rr_i *i, struct dns_pa
 	if (i->type && rr->type != i->type && i->type != DNS_T_ALL)
 		return 0;
 
-	if (i->class && rr->class != i->class && i->class != DNS_C_ANY)
+	if (i->class_ && rr->class_ != i->class_ && i->class_ != DNS_C_ANY)
 		return 0;
 
 	if (i->name) {
@@ -2979,7 +2979,7 @@ size_t dns_rr_print(void *_dst, size_t lim, struct dns_rr *rr, struct dns_packet
 	}
 
 	dns_b_putc(&dst, ' ');
-	dns_b_puts(&dst, dns_strclass(rr->class));
+	dns_b_puts(&dst, dns_strclass(rr->class_));
 	dns_b_putc(&dst, ' ');
 	dns_b_puts(&dst, dns_strtype(rr->type));
 
@@ -3614,7 +3614,7 @@ int dns_opt_parse(struct dns_opt *opt, struct dns_rr *rr, struct dns_packet *P) 
 	opt->rcode = 0xfff & ((rr->ttl >> 20) | dns_header(P)->rcode);
 	opt->version = 0xff & (rr->ttl >> 16);
 	opt->flags = 0xffff & rr->ttl;
-	opt->maxudp = 0xffff & rr->class;
+	opt->maxudp = 0xffff & rr->class_;
 
 	while (src.p < src.pe) {
 		int code, len;
@@ -4368,7 +4368,7 @@ struct dns_packet *dns_hosts_query(struct dns_hosts *hosts, struct dns_packet *Q
 	else if (qlen >= sizeof qname)
 		goto toolong;
 
-	if ((error = dns_p_push(P, DNS_S_QD, qname, qlen, rr.type, rr.class, 0, 0)))
+	if ((error = dns_p_push(P, DNS_S_QD, qname, qlen, rr.type, rr.class_, 0, 0)))
 		goto error;
 
 	switch (rr.type) {
@@ -4377,7 +4377,7 @@ struct dns_packet *dns_hosts_query(struct dns_hosts *hosts, struct dns_packet *Q
 			if (ent->alias || 0 != strcasecmp(qname, ent->arpa))
 				continue;
 
-			if ((error = dns_p_push(P, DNS_S_AN, qname, qlen, rr.type, rr.class, 0, ent->host)))
+			if ((error = dns_p_push(P, DNS_S_AN, qname, qlen, rr.type, rr.class_, 0, ent->host)))
 				goto error;
 		}
 
@@ -4393,7 +4393,7 @@ loop:		for (ent = hosts->head; ent; ent = ent->next) {
 			if (ent->af != af || 0 != strcasecmp(qname, ent->host))
 				continue;
 
-			if ((error = dns_p_push(P, DNS_S_AN, qname, qlen, rr.type, rr.class, 0, &ent->addr)))
+			if ((error = dns_p_push(P, DNS_S_AN, qname, qlen, rr.type, rr.class_, 0, &ent->addr)))
 				goto error;
 		}
 
@@ -6456,7 +6456,7 @@ int dns_so_submit(struct dns_socket *so, struct dns_packet *Q, struct sockaddr *
 	 */
 
 	so->qtype	= rr.type;
-	so->qclass	= rr.class;
+	so->qclass	= rr.class_;
 
 	if ((error = dns_so_newanswer(so, (Q->memo.opt.maxudp)? Q->memo.opt.maxudp : DNS_SO_MINBUF)))
 		goto syerr;
@@ -6501,7 +6501,7 @@ static int dns_so_verify(struct dns_socket *so, struct dns_packet *P) {
 	if (0 != dns_rr_parse(&rr, 12, so->answer))
 		goto reject;
 
-	if (rr.type != so->qtype || rr.class != so->qclass)
+	if (rr.type != so->qtype || rr.class_ != so->qclass)
 		goto reject;
 
 	if (!(qlen = dns_d_expand(qname, sizeof qname, rr.dn.p, P, &error)))

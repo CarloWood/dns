@@ -33,7 +33,7 @@
 
 #include <time.h>		/* time_t */
 
-#if _WIN32
+#ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #else
@@ -48,6 +48,11 @@
 #include <netdb.h>		/* struct addrinfo */
 #endif
 
+#include <stdbool.h>            /* Define bool as _Bool when compiling as C code */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /*
  * V I S I B I L I T Y
@@ -502,7 +507,7 @@ struct dns_rr {
 	} dn;
 
 	enum dns_type type;
-	enum dns_class class;
+	enum dns_class class_;
 	unsigned ttl;
 
 	struct {
@@ -530,7 +535,7 @@ struct dns_rr_i {
 	enum dns_section section;
 	const void *name;
 	enum dns_type type;
-	enum dns_class class;
+	enum dns_class class_;
 	const void *data;
 
 	int follow;
@@ -878,7 +883,7 @@ DNS_PUBLIC int dns_hosts_loadpath(struct dns_hosts *, const char *);
 
 DNS_PUBLIC int dns_hosts_dump(struct dns_hosts *, FILE *);
 
-DNS_PUBLIC int dns_hosts_insert(struct dns_hosts *, int, const void *, const void *, _Bool);
+DNS_PUBLIC int dns_hosts_insert(struct dns_hosts *, int, const void *, const void *, bool);
 
 DNS_PUBLIC struct dns_packet *dns_hosts_query(struct dns_hosts *, struct dns_packet *, int *);
 
@@ -900,7 +905,7 @@ struct dns_resolv_conf {
 	int family[3];
 
 	struct {
-		_Bool edns0;
+		bool edns0;
 
 		unsigned ndots;
 
@@ -908,11 +913,11 @@ struct dns_resolv_conf {
 
 		unsigned attempts;
 
-		_Bool rotate;
+		bool rotate;
 
-		_Bool recurse;
+		bool recurse;
 
-		_Bool smart;
+		bool smart;
 
 		enum {
 			DNS_RESCONF_TCP_ENABLE,
@@ -1244,5 +1249,9 @@ DNS_PUBLIC size_t dns_strlcat(char *, const char *, size_t);
 #define DNS_PP_D10 9
 #define DNS_PP_D11 10
 #define DNS_PP_DEC(N) DNS_PP_XPASTE(DNS_PP_D, N)
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
 
 #endif /* DNS_H */
