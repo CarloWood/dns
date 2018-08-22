@@ -349,12 +349,20 @@ const char *dns_strerror(int error) {
 		return "Bad execution state (missing answer packet)";
 	case DNS_EFETCHED:
 		return "Answer already fetched";
-	case DNS_ESERVICE:
-		return "The service passed was not recognized for the specified socket type";
 	case DNS_ENONAME:
 		return "The name does not resolve for the supplied parameters";
 	case DNS_EFAIL:
 		return "A non-recoverable error occurred when attempting to resolve the name";
+	case DNS_EFAMILY:
+		return "`ai_family' not supported.";
+	case DNS_ESERVICE:
+		return "The service passed was not recognized for the specified socket type";
+	case DNS_EMEMORY:
+		return "Memory allocation failure.";
+	case DNS_OVERFLOW:
+		return "Argument buffer overflow.";
+	case DNS_SYSTEM:	/* System error returned in `errno'. */
+		/* FALL THROUGH */
 	default:
 		return strerror(error);
 	} /* switch() */
@@ -8184,7 +8192,7 @@ static enum dns_type dns_ai_qtype(struct dns_addrinfo *ai) {
 } /* dns_ai_qtype() */
 
 
-static dns_error_t dns_ai_parseport(unsigned short *port, const char *serv, const struct addrinfo *hints) {
+static dns_error_t dns_ai_parseport(unsigned short *port, const char *serv, struct addrinfo *hints) {
 	const char *cp = serv;
 	unsigned long n = 0;
 
@@ -8205,7 +8213,43 @@ static dns_error_t dns_ai_parseport(unsigned short *port, const char *serv, cons
 	if (hints->ai_flags & AI_NUMERICSERV)
 		return DNS_ESERVICE;
 
-	/* TODO: try getaddrinfo(NULL, serv, { .ai_flags = AI_NUMERICSERV }) */
+	struct addrinfo* res;
+	int flags = hints->ai_flags;
+	hints->ai_flags = 0;
+	CALLING1("getaddrinfo(NULL, \"%s\", hints:{flags:0, family:%d, socktype:%d, protocol:%d}, &s)",
+			serv, hints->ai_family, hints->ai_socktype, hints->ai_protocol);
+	int error = getaddrinfo(NULL, serv, hints, &res);
+	hints->ai_flags = flags;
+	switch (error)
+	{
+		case 0:
+			hints->ai_family = res->ai_family;
+			hints->ai_socktype = res->ai_socktype;
+			hints->ai_protocol = res->ai_protocol;
+			*port = ntohs(*dns_sa_port(res->ai_family, res->ai_addr));
+			printf("Result hints:{flags:0x%x, family:%d, socktype:%d, protocol:%d}\n",
+					hints->ai_flags, hints->ai_family, hints->ai_socktype, hints->ai_protocol);
+			freeaddrinfo(res);
+			return 0;
+		case EAI_NONAME:
+			return DNS_ENONAME;
+		case EAI_FAIL:
+			return DNS_EFAIL;
+		case EAI_FAMILY:
+			return DNS_EFAMILY;
+		case EAI_SOCKTYPE:
+			return DNS_SOCKTYPE;
+		case EAI_SERVICE:
+			return DNS_ESERVICE;
+		case EAI_MEMORY:
+			return DNS_EMEMORY;
+		case EAI_OVERFLOW:
+			return DNS_OVERFLOW;
+		case EAI_SYSTEM:
+			return DNS_SYSTEM;
+		default:
+			assert(0);	// Should never happen because node is NULL.
+	}
 
 	return DNS_ESERVICE;
 } /* dns_ai_parseport() */
@@ -8244,7 +8288,7 @@ struct dns_addrinfo *dns_ai_open(const char *host, const char *serv, enum dns_ty
 	ai->qtype = qtype;
 	ai->qport = 0;
 
-	if (serv && (error = dns_ai_parseport(&ai->qport, serv, hints)))
+	if (serv && (error = dns_ai_parseport(&ai->qport, serv, &ai->hints)))
 		goto error;
 	ai->port = ai->qport;
 
@@ -9676,7 +9720,7 @@ static int resolve_addrinfo(int argc DNS_NOTUSED, char *argv[]) {
 	int error;
 
 	if (!MAIN.qname)
-		MAIN.qname = "www.google.com";
+		MAIN.qname = "irc.undernet.org";
 	/* NB: MAIN.qtype of 0 means obey hints.ai_family */
 
 	resconf()->options.recurse = recurse;
@@ -9684,7 +9728,7 @@ static int resolve_addrinfo(int argc DNS_NOTUSED, char *argv[]) {
 	if (!(res = dns_res_open(resconf(), hosts(), dns_hints_mortal(hints(resconf(), &error)), cache(), dns_opts(), &error)))
 		panic("%s: %s", MAIN.qname, dns_strerror(error));
 
-	if (!(ai = dns_ai_open(MAIN.qname, "80", MAIN.qtype, &ai_hints, res, &error)))
+	if (!(ai = dns_ai_open(MAIN.qname, "ircd", MAIN.qtype, &ai_hints, res, &error)))
 		panic("%s: %s", MAIN.qname, dns_strerror(error));
 
 	do {
