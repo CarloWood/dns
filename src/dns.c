@@ -6269,6 +6269,12 @@ struct dns_socket {
 
 	struct dns_stat stat;
 
+	/* Added by Carlo Wood for external mainloop support. */
+	void* user_data;
+	void (*want_to_write)(void*);	// Called with user_data as argument when the library has something to write.
+	void (*want_to_read)(void*);	// Called with user_data as argument when the library expects something to read.
+	void (*closed_fd)(void*);		// Called with user_data as argument when it killed the socket.
+
 	/*
 	 * NOTE: dns_so_reset() zeroes everything from here down.
 	 */
@@ -6287,6 +6293,10 @@ struct dns_socket {
 
 	struct dns_packet *answer;
 	size_t alen, apos;
+
+	/* Added by Carlo Wood for external mainloop support. */
+	bool can_read;
+	bool can_write;
 }; /* struct dns_socket */
 
 
@@ -6398,6 +6408,9 @@ error:
 static void dns_so_destroy(struct dns_socket *so) {
 	dns_so_reset(so);
 	dns_so_closefds(so, DNS_SO_CLOSE_ALL);
+	if (so->closed_fd) {
+		so->closed_fd(so->user_data);
+	}
 } /* dns_so_destroy() */
 
 
@@ -6627,8 +6640,15 @@ retry:
 		so->state++;
 		/* FALL THROUGH */
 	case DNS_SO_UDP_SEND:
+		if (so->want_to_write && !so->can_write) {
+			so->want_to_write(so->user_data);
+			return DNS_EAGAIN;
+		}
 		if (0 > (n = send(so->udp, (void *)so->query->data, so->query->end, 0)))
+		{
+			so->can_write = 0;
 			goto soerr;
+		}
 
 		so->stat.udp.sent.bytes += n;
 		so->stat.udp.sent.count++;
@@ -6636,8 +6656,15 @@ retry:
 		so->state++;
 		/* FALL THROUGH */
 	case DNS_SO_UDP_RECV:
+		if (so->want_to_read && !so->can_read) {
+			so->want_to_read(so->user_data);
+			return DNS_EAGAIN;
+		}
 		if (0 > (n = recv(so->udp, (void *)so->answer->data, so->answer->size, 0)))
+		{
+			so->can_read = 0;
 			goto soerr;
+		}
 
 		so->stat.udp.rcvd.bytes += n;
 		so->stat.udp.rcvd.count++;
@@ -7976,6 +8003,9 @@ struct dns_packet *dns_res_query(struct dns_resolver *res, const char *qname, en
 		if (error != DNS_EAGAIN)
 			goto error;
 
+		if (res->so.want_to_read)
+			goto error;
+
 		if ((error = dns_res_poll(res, 1)))
 			goto error;
 	}
@@ -7999,6 +8029,41 @@ void dns_res_sethints(struct dns_resolver *res, struct dns_hints *hints) {
 	res->hints = hints;
 } /* dns_res_sethints() */
 
+
+/*
+ * Set call back hooks for external main loop.
+ */
+void dns_set_so_hooks(struct dns_resolver* R, void* user_data, void (*dns_wants_to_write)(void*), void (*dns_wants_to_read)(void*), void (*dns_closed_fd)(void*))
+{
+	R->so.user_data = user_data;
+	R->so.want_to_write = dns_wants_to_write;
+	R->so.want_to_read = dns_wants_to_read;
+	R->so.closed_fd = dns_closed_fd;
+}
+
+/*
+ * Actually perform a socket write the next time dns_so_check() is called.
+ */
+void dns_so_is_writable(struct dns_resolver* R)
+{
+	R->so.can_write = 1;
+}
+
+/*
+ * Actually perform a socket read the next time dns_so_check() is called.
+ */
+void dns_so_is_readable(struct dns_resolver* R)
+{
+	R->so.can_read = 1;
+}
+
+/*
+ * Allow reading the udp socket that was created by dns_so_init().
+ */
+int dns_udp_fd(struct dns_resolver const* R)
+{
+	return R->so.udp;
+}
 
 /*
  * A D D R I N F O  R O U T I N E S
