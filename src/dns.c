@@ -31,7 +31,6 @@
 #undef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
 
-// Is this still needed now that _DEFAULT_SOURCE is set? The use of _BSD_SOURCE is deprecated.
 #undef _BSD_SOURCE
 #define _BSD_SOURCE
 
@@ -8392,8 +8391,11 @@ static int dns_ai_setent(struct addrinfo **ent, union dns_any *any, enum dns_typ
 	(*ent)->ai_addr		= memcpy((unsigned char *)*ent + sizeof **ent, &saddr, dns_sa_len(&saddr));
 	(*ent)->ai_addrlen	= dns_sa_len(&saddr);
 
-	if (ai->hints.ai_flags & AI_CANONNAME)
+	if (ai->hints.ai_flags & AI_CANONNAME) {
 		(*ent)->ai_canonname	= memcpy((unsigned char *)*ent + sizeof **ent + dns_sa_len(&saddr), cname, clen + 1);
+		// As per the documentation of gethostbyaddr, ai_canonname should ONLY be set in the first entry.
+		ai->hints.ai_flags &= ~AI_CANONNAME;
+	}
 
 	ai->found++;
 
