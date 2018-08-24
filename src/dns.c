@@ -6412,7 +6412,9 @@ struct dns_socket {
 	struct dns_stat stat;
 
 	/* Added by Carlo Wood for external mainloop support. */
-	void* user_data;
+	void* udp_user_data;
+	void* tcp_user_data;
+	void* (*created_socket)(int);	// Called with fd of new socket. Returns user_data.
 	void (*want_to_write)(void*);	// Called with user_data as argument when the library has something to write.
 	void (*want_to_read)(void*);	// Called with user_data as argument when the library expects something to read.
 	void (*closed_fd)(void*);		// Called with user_data as argument when it killed the socket.
@@ -6437,10 +6439,13 @@ struct dns_socket {
 	size_t alen, apos;
 
 	/* Added by Carlo Wood for external mainloop support. */
-	bool can_read;
-	bool can_write;
+	int can_readwrite;
 }; /* struct dns_socket */
 
+static const int DNS_UDP_CAN_READ = 1;
+static const int DNS_UDP_CAN_WRITE = 2;
+static const int DNS_TCP_CAN_READ = 4;
+static const int DNS_TCP_CAN_WRITE = 8;
 
 /*
  * NOTE: Actual closure delayed so that kqueue(2) and epoll(2) callers have
@@ -6485,10 +6490,16 @@ static int dns_so_closefd(struct dns_socket *so, int *fd) {
 #define DNS_SO_CLOSE_ALL (DNS_SO_CLOSE_UDP|DNS_SO_CLOSE_TCP|DNS_SO_CLOSE_OLD)
 
 static void dns_so_closefds(struct dns_socket *so, int which) {
-	if (DNS_SO_CLOSE_UDP & which)
+	if (DNS_SO_CLOSE_UDP & which) {
 		dns_socketclose(&so->udp, &so->opts);
-	if (DNS_SO_CLOSE_TCP & which)
+		if (so->udp_user_data)
+			so->closed_fd(so->udp_user_data);
+	}
+	if (DNS_SO_CLOSE_TCP & which) {
 		dns_socketclose(&so->tcp, &so->opts);
+		if (so->tcp_user_data)
+			so->closed_fd(so->tcp_user_data);
+	}
 	if (DNS_SO_CLOSE_OLD & which) {
 		unsigned i;
 		for (i = 0; i < so->onum; i++)
@@ -6518,6 +6529,12 @@ static struct dns_socket *dns_so_init(struct dns_socket *so, const struct sockad
 
 	if (-1 == (so->udp = dns_socket((struct sockaddr *)&so->local, SOCK_DGRAM, error)))
 		goto error;
+
+	// This is really a one-time thing it seems and so->created_socket will never be set when we get here.
+	// But add these two lines of code anyway so the intent ;).
+	// Note that created_socket will be called a bit later, as soon as dns_set_so_hooks is called.
+	if (so->created_socket)
+		so->udp_user_data = (so->created_socket)(so->udp);
 
 	dns_k_permutor_init(&so->qids, 1, 65535);
 
@@ -6552,9 +6569,6 @@ error:
 static void dns_so_destroy(struct dns_socket *so) {
 	dns_so_reset(so);
 	dns_so_closefds(so, DNS_SO_CLOSE_ALL);
-	if (so->closed_fd) {
-		so->closed_fd(so->user_data);
-	}
 } /* dns_so_destroy() */
 
 
@@ -6804,15 +6818,15 @@ retry:
 		so->state++;
 		/* FALL THROUGH */
 	case DNS_SO_UDP_SEND:
-		if (so->want_to_write && !so->can_write) {
-			so->want_to_write(so->user_data);
+		if (so->want_to_write && !(so->can_readwrite & DNS_UDP_CAN_WRITE)) {
+			so->want_to_write(so->udp_user_data);
 			LEAVING("dns_so_check() [DNS_EAGAIN] 1.");
 			return DNS_EAGAIN;
 		}
 		CALLING("send() [4]");
 		if (0 > (n = send(so->udp, (void *)so->query->data, so->query->end, 0)))
 		{
-			so->can_write = 0;
+			so->can_readwrite &= ~DNS_UDP_CAN_WRITE;
 			goto soerr;
 		}
 
@@ -6822,15 +6836,15 @@ retry:
 		so->state++;
 		/* FALL THROUGH */
 	case DNS_SO_UDP_RECV:
-		if (so->want_to_read && !so->can_read) {
-			so->want_to_read(so->user_data);
+		if (so->want_to_read && !(so->can_readwrite & DNS_UDP_CAN_READ)) {
+			so->want_to_read(so->udp_user_data);
 			LEAVING("dns_so_check() [DNS_EAGAIN] 2.");
 			return DNS_EAGAIN;
 		}
 		CALLING("recv() [2]");
 		if (0 > (n = recv(so->udp, (void *)so->answer->data, so->answer->size, 0)))
 		{
-			so->can_read = 0;
+			so->can_readwrite &= ~DNS_UDP_CAN_READ;
 			goto soerr;
 		}
 
@@ -6867,26 +6881,54 @@ retry:
 		if (-1 == (so->tcp = dns_socket((struct sockaddr *)&so->local, SOCK_STREAM, &error)))
 			goto error;
 
+		if (so->created_socket)
+			so->tcp_user_data = (so->created_socket)(so->tcp);
+
 		so->state++;
 		/* FALL THROUGH */
 	case DNS_SO_TCP_CONN:
 		CALLING("connect() [2]");
 		if (0 != connect(so->tcp, (struct sockaddr *)&so->remote, dns_sa_len(&so->remote))) {
 			if (dns_soerr() != DNS_EISCONN)
+			{
+				if (dns_soerr() == DNS_EINPROGRESS) {
+					if (so->want_to_write && !(so->can_readwrite & DNS_TCP_CAN_WRITE))
+						so->want_to_write(so->tcp_user_data);
+					so->state++;
+					LEAVING("dns_so_check() [DNS_EINPROGRESS]");
+					return DNS_EAGAIN;
+				}
 				goto soerr;
+			}
 		}
 
 		so->state++;
 		/* FALL THROUGH */
 	case DNS_SO_TCP_SEND:
+		if (so->want_to_write && !(so->can_readwrite & DNS_TCP_CAN_WRITE)) {
+			so->want_to_write(so->tcp_user_data);
+			LEAVING("dns_so_check() [DNS_EAGAIN] 1.");
+			return DNS_EAGAIN;
+		}
 		if ((error = dns_so_tcp_send(so)))
+		{
+			so->can_readwrite &= ~DNS_TCP_CAN_WRITE;
 			goto error;
+		}
 
 		so->state++;
 		/* FALL THROUGH */
 	case DNS_SO_TCP_RECV:
+		if (so->want_to_read && !(so->can_readwrite & DNS_TCP_CAN_READ)) {
+			so->want_to_read(so->tcp_user_data);
+			LEAVING("dns_so_check() [DNS_EAGAIN] 2.");
+			return DNS_EAGAIN;
+		}
 		if ((error = dns_so_tcp_recv(so)))
+		{
+			so->can_readwrite &= ~DNS_TCP_CAN_READ;
 			goto error;
+		}
 
 		so->state++;
 		/* FALL THROUGH */
@@ -8241,36 +8283,36 @@ void dns_res_sethints(struct dns_resolver *res, struct dns_hints *hints) {
 /*
  * Set call back hooks for external main loop.
  */
-void dns_set_so_hooks(struct dns_resolver* R, void* user_data, void (*dns_wants_to_write)(void*), void (*dns_wants_to_read)(void*), void (*dns_closed_fd)(void*))
+void dns_set_so_hooks(struct dns_resolver* R, void* (*created_socket)(int), void (*wants_to_write)(void*), void (*wants_to_read)(void*), void (*closed_fd)(void*))
 {
-	R->so.user_data = user_data;
-	R->so.want_to_write = dns_wants_to_write;
-	R->so.want_to_read = dns_wants_to_read;
-	R->so.closed_fd = dns_closed_fd;
+	// Do not call dns_set_so_hooks more than once.
+	assert(!R->so.created_socket);
+
+	R->so.created_socket = created_socket;
+	R->so.want_to_write = wants_to_write;
+	R->so.want_to_read = wants_to_read;
+	R->so.closed_fd = closed_fd;
+
+	// The UDP socket was created already.
+	R->so.udp_user_data = created_socket(R->so.udp);
 }
 
 /*
  * Actually perform a socket write the next time dns_so_check() is called.
  */
-void dns_so_is_writable(struct dns_resolver* R)
+void dns_so_is_writable(struct dns_resolver* R, void* user_data)
 {
-	R->so.can_write = 1;
+	R->so.can_readwrite |= (R->so.udp_user_data == user_data) ? DNS_UDP_CAN_WRITE : 0;
+	R->so.can_readwrite |= (R->so.tcp_user_data == user_data) ? DNS_TCP_CAN_WRITE : 0;
 }
 
 /*
  * Actually perform a socket read the next time dns_so_check() is called.
  */
-void dns_so_is_readable(struct dns_resolver* R)
+void dns_so_is_readable(struct dns_resolver* R, void* user_data)
 {
-	R->so.can_read = 1;
-}
-
-/*
- * Allow reading the udp socket that was created by dns_so_init().
- */
-int dns_udp_fd(struct dns_resolver const* R)
-{
-	return R->so.udp;
+	R->so.can_readwrite |= (R->so.udp_user_data == user_data) ? DNS_UDP_CAN_READ : 0;
+	R->so.can_readwrite |= (R->so.tcp_user_data == user_data) ? DNS_TCP_CAN_READ : 0;
 }
 
 /*
