@@ -416,7 +416,7 @@ const char *dns_strerror(int error) {
 	case DNS_EFAMILY:
 		return "`ai_family' not supported.";
 	case DNS_ESERVICE:
-		return "The service passed was not recognized for the specified socket type";
+		return "The service passed was not recognized for the specified hints";
 	case DNS_EMEMORY:
 		return "Memory allocation failure.";
 	case DNS_OVERFLOW:
@@ -8513,7 +8513,7 @@ struct dns_addrinfo *dns_ai_open(const char *host, const char *serv, enum dns_ty
 		 */
 		if (!*_error)
 			*_error = EINVAL;
-		LEAVING("dns_ai_open() = NULL");
+		LEAVING("dns_ai_open() [EINVAL] = NULL");
 		return NULL;
 	}
 
@@ -8575,7 +8575,7 @@ error:
 	dns_ai_close(ai);
 	dns_res_close(res);
 
-	LEAVING("dns_ai_open() [error] = NULL");
+	LEAVING1("dns_ai_open() [error = %d] = NULL", error);
 	return NULL;
 } /* dns_ai_open() */
 
