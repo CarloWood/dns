@@ -413,16 +413,8 @@ const char *dns_strerror(int error) {
 		return "The name does not resolve for the supplied parameters";
 	case DNS_EFAIL:
 		return "A non-recoverable error occurred when attempting to resolve the name";
-	case DNS_EFAMILY:
-		return "`ai_family' not supported.";
 	case DNS_ESERVICE:
 		return "The service passed was not recognized for the specified hints";
-	case DNS_EMEMORY:
-		return "Memory allocation failure.";
-	case DNS_OVERFLOW:
-		return "Argument buffer overflow.";
-	case DNS_SYSTEM:	/* System error returned in `errno'. */
-		/* FALL THROUGH */
 	default:
 		return strerror(error);
 	} /* switch() */
@@ -8435,6 +8427,7 @@ static enum dns_type dns_ai_qtype(struct dns_addrinfo *ai) {
 
 
 static dns_error_t dns_ai_parseport(unsigned short *port, const char *serv, struct addrinfo *hints) {
+	ENTERING1("dns_ai_parseport(port, \"%s\", hints)", serv);
 	const char *cp = serv;
 	unsigned long n = 0;
 
@@ -8445,55 +8438,44 @@ static dns_error_t dns_ai_parseport(unsigned short *port, const char *serv, stru
 
 	if (*cp == '\0') {
 		if (cp == serv || n >= 65536)
+		{
+			LEAVING("dns_ai_parseport() [error] 1.");
 			return DNS_ESERVICE;
+		}
 
 		*port = n;
 
+		LEAVING1("dns_ai_parseport() returned port %hu", *port);
 		return 0;
 	}
 
 	if (hints->ai_flags & AI_NUMERICSERV)
-		return DNS_ESERVICE;
-
-	struct addrinfo* res;
-	int flags = hints->ai_flags;
-	hints->ai_flags = 0;
-	CALLING1("getaddrinfo(NULL, \"%s\", hints:{flags:0, family:%d, socktype:%d, protocol:%d}, &s)",
-			serv, hints->ai_family, hints->ai_socktype, hints->ai_protocol);
-	int error = getaddrinfo(NULL, serv, hints, &res);
-	hints->ai_flags = flags;
-	switch (error)
 	{
-		case 0:
-			hints->ai_family = res->ai_family;
-			hints->ai_socktype = res->ai_socktype;
-			hints->ai_protocol = res->ai_protocol;
-			*port = ntohs(*dns_sa_port(res->ai_family, res->ai_addr));
-			printf("Result hints:{flags:0x%x, family:%d, socktype:%d, protocol:%d}\n",
-					hints->ai_flags, hints->ai_family, hints->ai_socktype, hints->ai_protocol);
-			freeaddrinfo(res);
-			return 0;
-		case EAI_NONAME:
-			return DNS_ENONAME;
-		case EAI_FAIL:
-			return DNS_EFAIL;
-		case EAI_FAMILY:
-			return DNS_EFAMILY;
-		case EAI_SOCKTYPE:
-			return DNS_SOCKTYPE;
-		case EAI_SERVICE:
-			return DNS_ESERVICE;
-		case EAI_MEMORY:
-			return DNS_EMEMORY;
-		case EAI_OVERFLOW:
-			return DNS_OVERFLOW;
-		case EAI_SYSTEM:
-			return DNS_SYSTEM;
-		default:
-			assert(0);	// Should never happen because node is NULL.
+		LEAVING("dns_ai_parseport() [error] 2.");
+		return DNS_ESERVICE;
 	}
 
-	return DNS_ESERVICE;
+	char const* proto_name = NULL;
+	if (hints->ai_protocol)		// Zero means 'any protocol'.
+	{
+		struct protoent* proto_ent = getprotobynumber(hints->ai_protocol);
+		if (!proto_ent)
+		{
+			LEAVING("dns_ai_parseport() [error] 3.");
+			return DNS_ESERVICE;	// Manual says "an error occurred but the value of errno is indeterminate". Perhaps an unknown protocol, so stop.
+		}
+		proto_name = proto_ent->p_name;
+		CALLING1("getprotobynumber(%d) returned \"%s\"\n", hints->ai_protocol, proto_name);
+	}
+	struct servent* serv_ent = getservbyname(serv, proto_name);
+	if (!serv_ent)
+	{
+		LEAVING("dns_ai_parseport() [error] 4.");
+		return DNS_ESERVICE;
+	}
+	*port = ntohs(serv_ent->s_port);
+	LEAVING1("dns_ai_parseport() returned port %hu", *port);
+	return 0;
 } /* dns_ai_parseport() */
 
 

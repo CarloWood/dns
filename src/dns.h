@@ -123,16 +123,9 @@ enum dns_errno {
 	DNS_ENOQUERY,
 	DNS_ENOANSWER,
 	DNS_EFETCHED,
-//      DNS_BADFLAGS, /* EAI_BADFLAGS */ We're always passing 0.
-	DNS_ENONAME,  /* EAI_NONAME */
-//      DNS_EAGAIN,   /* EAI_AGAIN */    Commented out because we only call getaddrinfo() with a NULL node name.
-	DNS_EFAIL,    /* EAI_FAIL */
-        DNS_EFAMILY,  /* EAI_FAMILY */
-        DNS_SOCKTYPE, /* EAI_SOCKTYPE */
 	DNS_ESERVICE, /* EAI_SERVICE */
-        DNS_EMEMORY,  /* EAI_MEMORY */
-        DNS_OVERFLOW, /* EAI_OVERFLOW */
-        DNS_SYSTEM,   /* EAI_SYSTEM */
+	DNS_ENONAME,  /* EAI_NONAME */
+	DNS_EFAIL,    /* EAI_FAIL */
 	DNS_ELAST,
 }; /* dns_errno */
 
