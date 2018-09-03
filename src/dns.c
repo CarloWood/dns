@@ -6404,8 +6404,8 @@ struct dns_socket {
 	struct dns_stat stat;
 
 	/* Added by Carlo Wood for external mainloop support. */
-	void* udp_user_data;
-	void* tcp_user_data;
+	_Atomic(void*) udp_user_data;
+	_Atomic(void*) tcp_user_data;
 	void* (*created_socket)(int);	// Called with fd of new socket. Returns user_data.
 	void (*want_to_write)(void*);	// Called with user_data as argument when the library has something to write.
 	void (*want_to_read)(void*);	// Called with user_data as argument when the library expects something to read.
