@@ -1184,9 +1184,11 @@ DNS_PUBLIC void dns_res_sethints(struct dns_resolver *, struct dns_hints *);
 
 // Hooks for libevio -- Carlo Wood.
 
-DNS_PUBLIC void dns_set_so_hooks(struct dns_resolver* R, void* (*created_socket)(int), void (*wants_to_write)(void*), void (*wants_to_read)(void*), void (*closed_fd)(void*));
-DNS_PUBLIC void dns_so_is_writable(struct dns_resolver* R, void* user_data);
-DNS_PUBLIC void dns_so_is_readable(struct dns_resolver* R, void* user_data);
+DNS_PUBLIC void dns_set_so_hooks(struct dns_resolver* R, void* (*created_socket)(int),
+                                 void (*start_output_device)(void*), void (*start_input_device)(void*),
+                                 void (*stop_output_device)(void*), void (*stop_input_device)(void*), void (*closed_fd)(void*));
+DNS_PUBLIC void dns_so_is_writable(struct dns_resolver* R, void* device);
+DNS_PUBLIC void dns_so_is_readable(struct dns_resolver* R, void* device);
 
 /*
  * A D D R I N F O  I N T E R F A C E

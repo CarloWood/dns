@@ -56,6 +56,7 @@
 #include <time.h>		/* time_t time(2) difftime(3) */
 #include <signal.h>		/* SIGPIPE sigemptyset(3) sigaddset(3) sigpending(2) sigprocmask(2) pthread_sigmask(3) sigtimedwait(2) */
 #include <errno.h>		/* errno EINVAL ENOENT */
+#include <stdatomic.h>	/* atomic_init atomic_load_explicit atomic_fetch_and_explicit atomic_fetch_or_explicit memory_order_relaxed */
 #undef NDEBUG
 #include <assert.h>		/* assert(3) */
 
@@ -6404,12 +6405,14 @@ struct dns_socket {
 	struct dns_stat stat;
 
 	/* Added by Carlo Wood for external mainloop support. */
-	_Atomic(void*) udp_user_data;
-	_Atomic(void*) tcp_user_data;
-	void* (*created_socket)(int);	// Called with fd of new socket. Returns user_data.
-	void (*want_to_write)(void*);	// Called with user_data as argument when the library has something to write.
-	void (*want_to_read)(void*);	// Called with user_data as argument when the library expects something to read.
-	void (*closed_fd)(void*);		// Called with user_data as argument when it killed the socket.
+	_Atomic(void*) udp_device;
+	_Atomic(void*) tcp_device;
+	void* (*created_socket)(int);		// Called with fd of new socket. Returns device.
+	void (*start_output_device)(void*);	// Called with device as argument when the library has something to write.
+	void (*start_input_device)(void*);	// Called with device as argument when the library expects something to read.
+	void (*stop_output_device)(void*);	// Called with device as argument when the library has nothing to write anymore.
+	void (*stop_input_device)(void*);	// Called with device as argument when the library doesn't expect anything to read anymore.
+	void (*closed_fd)(void*);			// Called with device as argument when it killed the socket.
 
 	/*
 	 * NOTE: dns_so_reset() zeroes everything from here down.
@@ -6431,7 +6434,7 @@ struct dns_socket {
 	size_t alen, apos;
 
 	/* Added by Carlo Wood for external mainloop support. */
-	int can_readwrite;
+	_Atomic int can_readwrite;
 }; /* struct dns_socket */
 
 static const int DNS_UDP_CAN_READ = 1;
@@ -6484,13 +6487,13 @@ static int dns_so_closefd(struct dns_socket *so, int *fd) {
 static void dns_so_closefds(struct dns_socket *so, int which) {
 	if (DNS_SO_CLOSE_UDP & which) {
 		dns_socketclose(&so->udp, &so->opts);
-		if (so->udp_user_data)
-			so->closed_fd(so->udp_user_data);
+		if (so->udp_device)
+			so->closed_fd(so->udp_device);
 	}
 	if (DNS_SO_CLOSE_TCP & which) {
 		dns_socketclose(&so->tcp, &so->opts);
-		if (so->tcp_user_data)
-			so->closed_fd(so->tcp_user_data);
+		if (so->tcp_device)
+			so->closed_fd(so->tcp_device);
 	}
 	if (DNS_SO_CLOSE_OLD & which) {
 		unsigned i;
@@ -6511,6 +6514,9 @@ static struct dns_socket *dns_so_init(struct dns_socket *so, const struct sockad
 	static const struct dns_socket so_initializer = { .opts = DNS_OPTS_INITIALIZER, .udp = -1, .tcp = -1, };
 
 	*so		= so_initializer;
+	atomic_init(&so->udp_device, NULL);
+	atomic_init(&so->tcp_device, NULL);
+	atomic_init(&so->can_readwrite, 0);
 	so->type	= type;
 
 	if (opts)
@@ -6526,7 +6532,7 @@ static struct dns_socket *dns_so_init(struct dns_socket *so, const struct sockad
 	// But add these two lines of code anyway so the intent ;).
 	// Note that created_socket will be called a bit later, as soon as dns_set_so_hooks is called.
 	if (so->created_socket)
-		so->udp_user_data = (so->created_socket)(so->udp);
+		so->udp_device = (so->created_socket)(so->udp);
 
 	dns_k_permutor_init(&so->qids, 1, 65535);
 
@@ -6810,17 +6816,18 @@ retry:
 		so->state++;
 		/* FALL THROUGH */
 	case DNS_SO_UDP_SEND:
-		if (so->want_to_write && !(so->can_readwrite & DNS_UDP_CAN_WRITE)) {
-			so->want_to_write(so->udp_user_data);
+		if (so->start_output_device && !(atomic_load_explicit(&so->can_readwrite, memory_order_relaxed) & DNS_UDP_CAN_WRITE)) {
+			so->start_output_device(so->udp_device);
 			LEAVING("dns_so_check() [DNS_EAGAIN] 1.");
 			return DNS_EAGAIN;
 		}
 		CALLING("send() [4]");
 		if (0 > (n = send(so->udp, (void *)so->query->data, so->query->end, 0)))
 		{
-			so->can_readwrite &= ~DNS_UDP_CAN_WRITE;
+			atomic_fetch_and_explicit(&so->can_readwrite, ~DNS_UDP_CAN_WRITE, memory_order_relaxed);
 			goto soerr;
 		}
+		so->stop_output_device(so->udp_device);
 
 		so->stat.udp.sent.bytes += n;
 		so->stat.udp.sent.count++;
@@ -6828,15 +6835,15 @@ retry:
 		so->state++;
 		/* FALL THROUGH */
 	case DNS_SO_UDP_RECV:
-		if (so->want_to_read && !(so->can_readwrite & DNS_UDP_CAN_READ)) {
-			so->want_to_read(so->udp_user_data);
+		if (so->start_input_device && !(atomic_load_explicit(&so->can_readwrite, memory_order_relaxed) & DNS_UDP_CAN_READ)) {
+			so->start_input_device(so->udp_device);
 			LEAVING("dns_so_check() [DNS_EAGAIN] 2.");
 			return DNS_EAGAIN;
 		}
 		CALLING("recv() [2]");
 		if (0 > (n = recv(so->udp, (void *)so->answer->data, so->answer->size, 0)))
 		{
-			so->can_readwrite &= ~DNS_UDP_CAN_READ;
+			atomic_fetch_and_explicit(&so->can_readwrite, ~DNS_UDP_CAN_READ, memory_order_relaxed);
 			goto soerr;
 		}
 
@@ -6874,7 +6881,7 @@ retry:
 			goto error;
 
 		if (so->created_socket)
-			so->tcp_user_data = (so->created_socket)(so->tcp);
+			so->tcp_device = (so->created_socket)(so->tcp);
 
 		so->state++;
 		/* FALL THROUGH */
@@ -6884,8 +6891,8 @@ retry:
 			if (dns_soerr() != DNS_EISCONN)
 			{
 				if (dns_soerr() == DNS_EINPROGRESS) {
-					if (so->want_to_write && !(so->can_readwrite & DNS_TCP_CAN_WRITE))
-						so->want_to_write(so->tcp_user_data);
+					if (so->start_output_device && !(atomic_load_explicit(&so->can_readwrite, memory_order_relaxed) & DNS_TCP_CAN_WRITE))
+						so->start_output_device(so->tcp_device);
 					so->state++;
 					LEAVING("dns_so_check() [DNS_EINPROGRESS]");
 					return DNS_EAGAIN;
@@ -6897,28 +6904,28 @@ retry:
 		so->state++;
 		/* FALL THROUGH */
 	case DNS_SO_TCP_SEND:
-		if (so->want_to_write && !(so->can_readwrite & DNS_TCP_CAN_WRITE)) {
-			so->want_to_write(so->tcp_user_data);
+		if (so->start_output_device && !(atomic_load_explicit(&so->can_readwrite, memory_order_relaxed) & DNS_TCP_CAN_WRITE)) {
+			so->start_output_device(so->tcp_device);
 			LEAVING("dns_so_check() [DNS_EAGAIN] 1.");
 			return DNS_EAGAIN;
 		}
 		if ((error = dns_so_tcp_send(so)))
 		{
-			so->can_readwrite &= ~DNS_TCP_CAN_WRITE;
+			atomic_fetch_and_explicit(&so->can_readwrite, ~DNS_TCP_CAN_WRITE, memory_order_relaxed);
 			goto error;
 		}
 
 		so->state++;
 		/* FALL THROUGH */
 	case DNS_SO_TCP_RECV:
-		if (so->want_to_read && !(so->can_readwrite & DNS_TCP_CAN_READ)) {
-			so->want_to_read(so->tcp_user_data);
+		if (so->start_input_device && !(atomic_load_explicit(&so->can_readwrite, memory_order_relaxed) & DNS_TCP_CAN_READ)) {
+			so->start_input_device(so->tcp_device);
 			LEAVING("dns_so_check() [DNS_EAGAIN] 2.");
 			return DNS_EAGAIN;
 		}
 		if ((error = dns_so_tcp_recv(so)))
 		{
-			so->can_readwrite &= ~DNS_TCP_CAN_READ;
+			atomic_fetch_and_explicit(&so->can_readwrite, ~DNS_TCP_CAN_READ, memory_order_relaxed);
 			goto error;
 		}
 
@@ -8242,7 +8249,7 @@ struct dns_packet *dns_res_query(struct dns_resolver *res, const char *qname, en
 		if (error != DNS_EAGAIN)
 			goto error;
 
-		if (res->so.want_to_read)
+		if (res->so.start_input_device)
 			goto error;
 
 		if ((error = dns_res_poll(res, 1)))
@@ -8275,36 +8282,45 @@ void dns_res_sethints(struct dns_resolver *res, struct dns_hints *hints) {
 /*
  * Set call back hooks for external main loop.
  */
-void dns_set_so_hooks(struct dns_resolver* R, void* (*created_socket)(int), void (*wants_to_write)(void*), void (*wants_to_read)(void*), void (*closed_fd)(void*))
+void dns_set_so_hooks(
+		struct dns_resolver* R,
+		void* (*created_socket)(int),
+		void (*start_output_device)(void*),
+		void (*start_input_device)(void*),
+		void (*stop_output_device)(void*),
+		void (*stop_input_device)(void*),
+		void (*closed_fd)(void*))
 {
 	// Do not call dns_set_so_hooks more than once.
 	assert(!R->so.created_socket);
 
 	R->so.created_socket = created_socket;
-	R->so.want_to_write = wants_to_write;
-	R->so.want_to_read = wants_to_read;
+	R->so.start_output_device = start_output_device;
+	R->so.start_input_device = start_input_device;
+	R->so.stop_output_device = stop_output_device;
+	R->so.stop_input_device = stop_input_device;
 	R->so.closed_fd = closed_fd;
 
 	// The UDP socket was created already.
-	R->so.udp_user_data = created_socket(R->so.udp);
+	R->so.udp_device = created_socket(R->so.udp);
 }
 
 /*
  * Actually perform a socket write the next time dns_so_check() is called.
  */
-void dns_so_is_writable(struct dns_resolver* R, void* user_data)
+void dns_so_is_writable(struct dns_resolver* R, void* device)
 {
-	R->so.can_readwrite |= (R->so.udp_user_data == user_data) ? DNS_UDP_CAN_WRITE : 0;
-	R->so.can_readwrite |= (R->so.tcp_user_data == user_data) ? DNS_TCP_CAN_WRITE : 0;
+	int const set_mask = (R->so.udp_device == device) ? DNS_UDP_CAN_WRITE : (R->so.tcp_device == device) ? DNS_TCP_CAN_WRITE : 0;
+	atomic_fetch_or_explicit(&R->so.can_readwrite, set_mask, memory_order_relaxed);
 }
 
 /*
  * Actually perform a socket read the next time dns_so_check() is called.
  */
-void dns_so_is_readable(struct dns_resolver* R, void* user_data)
+void dns_so_is_readable(struct dns_resolver* R, void* device)
 {
-	R->so.can_readwrite |= (R->so.udp_user_data == user_data) ? DNS_UDP_CAN_READ : 0;
-	R->so.can_readwrite |= (R->so.tcp_user_data == user_data) ? DNS_TCP_CAN_READ : 0;
+	int const set_mask = (R->so.udp_device == device) ? DNS_UDP_CAN_READ : (R->so.tcp_device == device) ? DNS_TCP_CAN_READ : 0;
+	atomic_fetch_or_explicit(&R->so.can_readwrite, set_mask, memory_order_relaxed);
 }
 
 /*
