@@ -6821,13 +6821,14 @@ retry:
 			LEAVING("dns_so_check() [DNS_EAGAIN] 1.");
 			return DNS_EAGAIN;
 		}
-		CALLING("send() [4]");
-		if (0 > (n = send(so->udp, (void *)so->query->data, so->query->end, 0)))
+		if (so->stop_output_device)
 		{
 			atomic_fetch_and_explicit(&so->can_readwrite, ~DNS_UDP_CAN_WRITE, memory_order_relaxed);
-			goto soerr;
+			so->stop_output_device(so->udp_device);
 		}
-		so->stop_output_device(so->udp_device);
+		CALLING("send() [4]");
+		if (0 > (n = send(so->udp, (void *)so->query->data, so->query->end, 0)))
+			goto soerr;
 
 		so->stat.udp.sent.bytes += n;
 		so->stat.udp.sent.count++;
@@ -6840,12 +6841,14 @@ retry:
 			LEAVING("dns_so_check() [DNS_EAGAIN] 2.");
 			return DNS_EAGAIN;
 		}
-		CALLING("recv() [2]");
-		if (0 > (n = recv(so->udp, (void *)so->answer->data, so->answer->size, 0)))
+		if (so->stop_input_device)
 		{
 			atomic_fetch_and_explicit(&so->can_readwrite, ~DNS_UDP_CAN_READ, memory_order_relaxed);
-			goto soerr;
+			so->stop_input_device(so->udp_device);
 		}
+		CALLING("recv() [2]");
+		if (0 > (n = recv(so->udp, (void *)so->answer->data, so->answer->size, 0)))
+			goto soerr;
 
 		so->stat.udp.rcvd.bytes += n;
 		so->stat.udp.rcvd.count++;
@@ -6909,11 +6912,13 @@ retry:
 			LEAVING("dns_so_check() [DNS_EAGAIN] 1.");
 			return DNS_EAGAIN;
 		}
-		if ((error = dns_so_tcp_send(so)))
+		if (so->stop_output_device)
 		{
 			atomic_fetch_and_explicit(&so->can_readwrite, ~DNS_TCP_CAN_WRITE, memory_order_relaxed);
-			goto error;
+			so->stop_output_device(so->tcp_device);
 		}
+		if ((error = dns_so_tcp_send(so)))
+			goto error;
 
 		so->state++;
 		/* FALL THROUGH */
@@ -6923,11 +6928,13 @@ retry:
 			LEAVING("dns_so_check() [DNS_EAGAIN] 2.");
 			return DNS_EAGAIN;
 		}
-		if ((error = dns_so_tcp_recv(so)))
+		if (so->stop_input_device)
 		{
 			atomic_fetch_and_explicit(&so->can_readwrite, ~DNS_TCP_CAN_READ, memory_order_relaxed);
-			goto error;
+			so->stop_input_device(so->tcp_device);
 		}
+		if ((error = dns_so_tcp_recv(so)))
+			goto error;
 
 		so->state++;
 		/* FALL THROUGH */
