@@ -6412,7 +6412,9 @@ struct dns_socket {
 	void (*start_input_device)(void*);	// Called with device as argument when the library expects something to read.
 	void (*stop_output_device)(void*);	// Called with device as argument when the library has nothing to write anymore.
 	void (*stop_input_device)(void*);	// Called with device as argument when the library doesn't expect anything to read anymore.
-	void (*closed_fd)(void*);			// Called with device as argument when it killed the socket.
+	void (*start_timer)();				// Called at the moment a query is sent to the server and we'll be waiting for a reply.
+	void (*stop_timer)();				// Called when an answer was received and the timer is no longer relevant.
+	void (*closed_fd)();				// Called with device as argument when it killed the socket.
 
 	/*
 	 * NOTE: dns_so_reset() zeroes everything from here down.
@@ -6441,6 +6443,7 @@ static const int DNS_UDP_CAN_READ = 1;
 static const int DNS_UDP_CAN_WRITE = 2;
 static const int DNS_TCP_CAN_READ = 4;
 static const int DNS_TCP_CAN_WRITE = 8;
+static const int DNS_TIMED_OUT = 16;
 
 /*
  * NOTE: Actual closure delayed so that kqueue(2) and epoll(2) callers have
@@ -6816,6 +6819,10 @@ retry:
 		so->state++;
 		/* FALL THROUGH */
 	case DNS_SO_UDP_SEND:
+		if (so->start_input_device && !(atomic_load_explicit(&so->can_readwrite, memory_order_relaxed) & DNS_UDP_CAN_READ)) {
+			/* Start listening even before we send anything. */
+			so->start_input_device(so->udp_device);
+		}
 		if (so->start_output_device && !(atomic_load_explicit(&so->can_readwrite, memory_order_relaxed) & DNS_UDP_CAN_WRITE)) {
 			so->start_output_device(so->udp_device);
 			LEAVING("dns_so_check() [DNS_EAGAIN] 1.");
@@ -6836,19 +6843,12 @@ retry:
 		so->state++;
 		/* FALL THROUGH */
 	case DNS_SO_UDP_RECV:
-		if (so->start_input_device && !(atomic_load_explicit(&so->can_readwrite, memory_order_relaxed) & DNS_UDP_CAN_READ)) {
-			so->start_input_device(so->udp_device);
-			LEAVING("dns_so_check() [DNS_EAGAIN] 2.");
-			return DNS_EAGAIN;
-		}
-		if (so->stop_input_device)
-		{
-			atomic_fetch_and_explicit(&so->can_readwrite, ~DNS_UDP_CAN_READ, memory_order_relaxed);
-			so->stop_input_device(so->udp_device);
-		}
 		CALLING("recv() [2]");
 		if (0 > (n = recv(so->udp, (void *)so->answer->data, so->answer->size, 0)))
 			goto soerr;
+
+		if (so->stop_timer)
+			so->stop_timer();
 
 		so->stat.udp.rcvd.bytes += n;
 		so->stat.udp.rcvd.count++;
@@ -6862,6 +6862,12 @@ retry:
 		so->state++;
 		/* FALL THROUGH */
 	case DNS_SO_UDP_DONE:
+		if (so->stop_input_device)
+		{
+			/* We're done with UDP, so stop reading that socket. */
+			atomic_fetch_and_explicit(&so->can_readwrite, ~DNS_UDP_CAN_READ, memory_order_relaxed);
+			so->stop_input_device(so->udp_device);
+		}
 		if (!dns_header(so->answer)->tc || so->type == SOCK_DGRAM)
 		{
 			LEAVING("dns_so_check() [UDP DONE]");
@@ -7838,11 +7844,22 @@ exec:
 		if ((error = dns_so_submit(&R->so, F->query, (struct sockaddr *)&sin)))
 			goto error;
 
+		if (R->so.start_timer) {
+			/* (Re)start the timer */
+			R->so.stop_timer();
+			atomic_fetch_and_explicit(&R->so.can_readwrite, ~DNS_TIMED_OUT, memory_order_relaxed);
+			R->so.start_timer();
+		}
+
 		F->state++;
 	}
 	/* FALL THROUGH */
 	case DNS_R_QUERY_A:
-		if (dns_so_elapsed(&R->so) >= dns_resconf_timeout(R->resconf))
+		if (R->so.start_timer) {
+		    if ((atomic_load_explicit(&R->so.can_readwrite, memory_order_relaxed) & DNS_TIMED_OUT))
+			    dgoto(R->sp, DNS_R_FOREACH_A);
+		}
+		else if (dns_so_elapsed(&R->so) >= dns_resconf_timeout(R->resconf))
 			dgoto(R->sp, DNS_R_FOREACH_A);
 
 		if ((error = dns_so_check(&R->so)))
@@ -8296,6 +8313,8 @@ void dns_set_so_hooks(
 		void (*start_input_device)(void*),
 		void (*stop_output_device)(void*),
 		void (*stop_input_device)(void*),
+		void (*start_timer)(),
+		void (*stop_timer)(),
 		void (*closed_fd)(void*))
 {
 	// Do not call dns_set_so_hooks more than once.
@@ -8306,6 +8325,8 @@ void dns_set_so_hooks(
 	R->so.start_input_device = start_input_device;
 	R->so.stop_output_device = stop_output_device;
 	R->so.stop_input_device = stop_input_device;
+	R->so.start_timer = start_timer;
+	R->so.stop_timer = stop_timer;
 	R->so.closed_fd = closed_fd;
 
 	// The UDP socket was created already.
@@ -8328,6 +8349,14 @@ void dns_so_is_readable(struct dns_resolver* R, void* device)
 {
 	int const set_mask = (R->so.udp_device == device) ? DNS_UDP_CAN_READ : (R->so.tcp_device == device) ? DNS_TCP_CAN_READ : 0;
 	atomic_fetch_or_explicit(&R->so.can_readwrite, set_mask, memory_order_relaxed);
+}
+
+/*
+ * Next run is because we timed out.
+ */
+void dns_timed_out(struct dns_resolver* R)
+{
+	atomic_fetch_or_explicit(&R->so.can_readwrite, DNS_TIMED_OUT, memory_order_relaxed);
 }
 
 /*
