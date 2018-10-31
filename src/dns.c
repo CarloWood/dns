@@ -410,12 +410,14 @@ const char *dns_strerror(int error) {
 		return "Bad execution state (missing answer packet)";
 	case DNS_EFETCHED:
 		return "Answer already fetched";
+	case DNS_ESERVICE:
+		return "The service passed was not recognized for the specified hints";
 	case DNS_ENONAME:
 		return "The name does not resolve for the supplied parameters";
 	case DNS_EFAIL:
 		return "A non-recoverable error occurred when attempting to resolve the name";
-	case DNS_ESERVICE:
-		return "The service passed was not recognized for the specified hints";
+	case DNS_EEMPTY:
+		return "List of returned IP numbers is empty";
 	default:
 		return strerror(error);
 	} /* switch() */

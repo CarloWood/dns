@@ -126,6 +126,7 @@ enum dns_errno {
 	DNS_ESERVICE, /* EAI_SERVICE */
 	DNS_ENONAME,  /* EAI_NONAME */
 	DNS_EFAIL,    /* EAI_FAIL */
+	DNS_EEMPTY,   /* Custom error (not set by libdns) */
 	DNS_ELAST,
 }; /* dns_errno */
 
