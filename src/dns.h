@@ -137,46 +137,6 @@ DNS_PUBLIC int *dns_debug_p(void);
 #define dns_debug (*dns_debug_p()) /* was extern int dns_debug before 20160523 API */
 
 
-/*
- * C O M P I L E R  A N N O T A T I O N S
- *
- * GCC with -Wextra, and clang by default, complain about overrides in
- * initializer lists. Overriding previous member initializers is well
- * defined behavior in C. dns.c relies on this behavior to define default,
- * overrideable member values when instantiating configuration objects.
- *
- * dns_quietinit() guards a compound literal expression with pragmas to
- * silence these shrill warnings. This alleviates the burden of requiring
- * third-party projects to adjust their compiler flags.
- *
- * NOTE: If you take the address of the compound literal, take the address
- * of the transformed expression, otherwise the compound literal lifetime is
- * tied to the scope of the GCC statement expression.
- *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
-#if defined __clang__
-#define DNS_PRAGMA_PUSH _Pragma("clang diagnostic push")
-#define DNS_PRAGMA_QUIET _Pragma("clang diagnostic ignored \"-Winitializer-overrides\"")
-#define DNS_PRAGMA_POP _Pragma("clang diagnostic pop")
-
-#define dns_quietinit(...) \
-	DNS_PRAGMA_PUSH DNS_PRAGMA_QUIET __VA_ARGS__ DNS_PRAGMA_POP
-#elif (__GNUC__ == 4 && __GNUC_MINOR__ >= 6) || __GNUC__ > 4
-#define DNS_PRAGMA_PUSH _Pragma("GCC diagnostic push")
-#define DNS_PRAGMA_QUIET _Pragma("GCC diagnostic ignored \"-Woverride-init\"")
-#define DNS_PRAGMA_POP _Pragma("GCC diagnostic pop")
-
-/* GCC parses the _Pragma operator less elegantly than clang. */
-#define dns_quietinit(...) \
-	__extension__ ({ DNS_PRAGMA_PUSH DNS_PRAGMA_QUIET __VA_ARGS__; DNS_PRAGMA_POP })
-#else
-#define DNS_PRAGMA_PUSH
-#define DNS_PRAGMA_QUIET
-#define DNS_PRAGMA_POP
-#define dns_quietinit(...) __VA_ARGS__
-#endif
-
 #if defined __GNUC__
 #define DNS_PRAGMA_EXTENSION __extension__
 #else
@@ -530,7 +490,7 @@ DNS_PUBLIC size_t dns_rr_print(void *, size_t, struct dns_rr *, struct dns_packe
 
 
 #define dns_rr_i_new(P, ...) \
-	dns_rr_i_init(&dns_quietinit((struct dns_rr_i){ 0, __VA_ARGS__ }), (P))
+	dns_rr_i_init(&(struct dns_rr_i){ __VA_ARGS__ }, (P))
 
 struct dns_rr_i {
 	enum dns_section section;
@@ -1062,7 +1022,7 @@ DNS_PUBLIC void dns_cache_close(struct dns_cache *);
 #define DNS_OPTS_INITIALIZER  { DNS_OPTS_INITIALIZER_ }
 #define DNS_OPTS_INIT(...)    { DNS_OPTS_INITIALIZER_, __VA_ARGS__ }
 
-#define dns_opts(...) (&dns_quietinit((struct dns_options)DNS_OPTS_INIT(__VA_ARGS__)))
+#define dns_opts(...) (&(struct dns_options)DNS_OPTS_INIT(__VA_ARGS__))
 
 struct dns_options {
 	/*

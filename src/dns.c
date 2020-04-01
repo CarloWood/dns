@@ -5212,9 +5212,6 @@ static enum dns_nssconf_keyword dns_nssconf_c2k(int ch) {
 } /* dns_nssconf_c2k() */
 
 
-DNS_PRAGMA_PUSH
-DNS_PRAGMA_QUIET
-
 static int dns_nssconf_k2c(int k) {
 	static const char map[DNS_NSSCONF_LAST] = {
 		[DNS_NSSCONF_SUCCESS]  = 'S',
@@ -5246,8 +5243,6 @@ static const char *dns_nssconf_k2s(int k) {
 
 	return (k >= 0 && k < (int)lengthof(map))? (map[k]? map[k] : "") : "";
 } /* dns_nssconf_k2s() */
-
-DNS_PRAGMA_POP
 
 
 int dns_nssconf_loadfile(struct dns_resolv_conf *resconf, FILE *fp) {
@@ -9576,7 +9571,7 @@ static struct dns_cache *cache(void) { return NULL; }
 
 
 static void print_packet(struct dns_packet *P, FILE *fp) {
-	dns_p_dump3(P, dns_rr_i_new(P, .sort = MAIN.sort), fp);
+	dns_p_dump3(P, dns_rr_i_new(P, .section = 0, .sort = MAIN.sort), fp);
 
 	if (MAIN.verbose > 2)
 		hexdump(P->data, P->end, fp);
@@ -9608,7 +9603,7 @@ static int parse_packet(int argc DNS_NOTUSED, char *argv[] DNS_NOTUSED) {
 
 	section	= 0;
 
-	dns_rr_foreach(&rr, P, .sort = MAIN.sort) {
+	dns_rr_foreach(&rr, P, .section = section, .sort = MAIN.sort) {
 		if (section != rr.section)
 			fprintf(stdout, "\n;; [%s:%d]\n", dns_strsection(rr.section), dns_p_count(P, rr.section));
 
@@ -9625,10 +9620,10 @@ static int parse_packet(int argc DNS_NOTUSED, char *argv[] DNS_NOTUSED) {
 	section	= 0;
 
 #if 0
-	dns_rr_foreach(&rr, Q, .name = "ns8.yahoo.com.") {
+	dns_rr_foreach(&rr, Q, .section = section, .name = "ns8.yahoo.com.") {
 #else
 	struct dns_rr rrset[32];
-	struct dns_rr_i *rri	= dns_rr_i_new(Q, .name = dns_d_new("ns8.yahoo.com", DNS_D_ANCHOR), .sort = MAIN.sort);
+	struct dns_rr_i *rri	= dns_rr_i_new(Q, .section = 0, .name = dns_d_new("ns8.yahoo.com", DNS_D_ANCHOR), .sort = MAIN.sort);
 	unsigned rrcount	= dns_rr_grep(rrset, lengthof(rrset), rri, Q, &error);
 
 	for (unsigned i = 0; i < rrcount; i++) {
