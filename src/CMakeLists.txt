@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.0)
+cmake_minimum_required(VERSION 3.0...3.27)
 
 project(dns
   DESCRIPTION "A non-blocking DNS resolver library in a single .c file"
