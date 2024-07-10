@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.0...3.27)
+cmake_minimum_required(VERSION 3.0...3.30)
 
 project(dns
   DESCRIPTION "A non-blocking DNS resolver library in a single .c file"
@@ -11,12 +11,6 @@ project(dns
 
 # This project is an OBJECT-library, used by other git submodules and the main project.
 add_library(dns_ObjLib OBJECT)
-
-# Set SOURCE_DIR to the current directory.
-set_property(
-  TARGET dns_ObjLib
-  PROPERTY SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
-)
 
 # The list of source files.
 target_sources(dns_ObjLib
